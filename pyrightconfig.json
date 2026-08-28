@@ -1,0 +1,3 @@
+{
+    "include": ["codeevolver_benchmarks", "scripts", "tests"]
+}

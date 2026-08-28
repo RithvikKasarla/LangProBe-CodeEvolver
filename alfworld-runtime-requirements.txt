@@ -1,0 +1,18 @@
+# Official ALFWorld visual/full environment. TextWorld is pinned to the
+# supported 1.6.1 baseline because newer releases pull a less reproducible
+# Python 3.9 build chain. ALFWorld itself pins AI2-THOR and Werkzeug.
+# 0.5.0 is not published on PyPI. This is the published version used by the
+# immutable image and the successful persistent-controller CPU canary.
+alfworld[full]==0.4.2
+textworld[pddl]==1.6.1
+
+# The HTTP renderer service imports these directly. Keep them explicit rather
+# than relying on optional/transitive ALFWorld extras in a reused image.
+PyYAML==6.0.3
+Pillow==11.3.0
+
+# Build tools required by legacy source distributions in the full extra.
+# setuptools 81+ removed pkg_resources, which visdom 0.2.4 imports at build time.
+setuptools==80.9.0
+wheel==0.47.0
+Cython==3.2.8
