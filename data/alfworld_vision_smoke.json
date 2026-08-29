@@ -1,5 +1,17 @@
 [
   {
     "game_file": "json_2.1.1/valid_seen/pick_and_place_simple-Book-None-SideTable-329/trial_T20190908_050633_745514/traj_data.json"
+  },
+  {
+    "game_file": "json_2.1.1/valid_seen/pick_and_place_simple-Book-None-Sofa-229/trial_T20190907_042856_259139/traj_data.json"
+  },
+  {
+    "game_file": "json_2.1.1/valid_seen/pick_and_place_simple-Bowl-None-CoffeeTable-201/trial_T20190907_171639_045329/traj_data.json"
+  },
+  {
+    "game_file": "json_2.1.1/valid_seen/look_at_obj_in_light-BaseballBat-None-DeskLamp-303/trial_T20190907_060414_846460/traj_data.json"
+  },
+  {
+    "game_file": "json_2.1.1/valid_seen/look_at_obj_in_light-Bowl-None-DeskLamp-301/trial_T20190909_150719_492274/traj_data.json"
   }
 ]
