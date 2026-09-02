@@ -1,9 +1,24 @@
 {
   "appworld": {
     "provider": "gmi",
-    "api_key_env": "GMI_API_KEY",
-    "base_url": "https://api.gmi-serving.com/v1",
-    "model": "deepseek-ai/DeepSeek-V4-Flash",
+    "provider_preference": ["gmi", "deepseek", "deepinfra"],
+    "routes": {
+      "gmi": {
+        "api_key_env": "GMI_API_KEY",
+        "base_url": "https://api.gmi-serving.com/v1",
+        "model": "deepseek-ai/DeepSeek-V4-Flash"
+      },
+      "deepseek": {
+        "api_key_env": "DEEPSEEK_API_KEY",
+        "base_url": "https://api.deepseek.com",
+        "model": "deepseek-v4-flash"
+      },
+      "deepinfra": {
+        "api_key_env": "DEEPINFRA_API_KEY",
+        "base_url": "https://api.deepinfra.com/v1/openai",
+        "model": "deepseek-ai/DeepSeek-V4-Flash"
+      }
+    },
     "reasoning_effort": "high",
     "max_tokens": 4096,
     "temperature": 0,
