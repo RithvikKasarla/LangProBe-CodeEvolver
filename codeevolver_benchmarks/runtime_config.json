@@ -1,48 +1,59 @@
 {
-  "appworld": {
-    "provider": "gmi",
-    "provider_preference": ["gmi", "deepseek", "deepinfra"],
-    "routes": {
-      "gmi": {
-        "api_key_env": "GMI_API_KEY",
-        "base_url": "https://api.gmi-serving.com/v1",
-        "model": "deepseek-ai/DeepSeek-V4-Flash"
-      },
-      "deepseek": {
-        "api_key_env": "DEEPSEEK_API_KEY",
-        "base_url": "https://api.deepseek.com",
-        "model": "deepseek-v4-flash"
-      },
-      "deepinfra": {
-        "api_key_env": "DEEPINFRA_API_KEY",
-        "base_url": "https://api.deepinfra.com/v1/openai",
-        "model": "deepseek-ai/DeepSeek-V4-Flash"
-      }
-    },
-    "reasoning_effort": "high",
-    "max_tokens": 4096,
-    "temperature": 0,
-    "seed": 42,
-    "max_steps": 40
+ "appworld": {
+  "provider": "gmi",
+  "provider_preference": [
+   "gmi",
+   "deepseek",
+   "deepinfra"
+  ],
+  "routes": {
+   "gmi": {
+    "api_key_env": "GMI_API_KEY",
+    "base_url": "https://api.gmi-serving.com/v1",
+    "model": "deepseek-ai/DeepSeek-V4-Flash"
+   },
+   "deepseek": {
+    "api_key_env": "DEEPSEEK_API_KEY",
+    "base_url": "https://api.deepseek.com",
+    "model": "deepseek-v4-flash"
+   },
+   "deepinfra": {
+    "api_key_env": "DEEPINFRA_API_KEY",
+    "base_url": "https://api.deepinfra.com/v1/openai",
+    "model": "deepseek-ai/DeepSeek-V4-Flash"
+   }
   },
-  "alfworld_vision": {
-    "provider": "openrouter",
-    "api_key_env": "OPENROUTER_API_KEY",
-    "base_url": "https://openrouter.ai/api/v1",
-    "model": "qwen/qwen3.6-35b-a3b",
-    "provider_preferences": {
-      "allow_fallbacks": true,
-      "preferred_max_latency": {
-        "p90": 10
-      },
-      "require_parameters": true,
-      "sort": "throughput"
-    },
-    "reasoning_effort": "medium",
-    "max_tokens": 8192,
-    "temperature": 0,
-    "seed": 42,
-    "max_steps": 40,
-    "jpeg_quality": 80
-  }
+  "reasoning_effort": "high",
+  "max_tokens": 4096,
+  "temperature": 0,
+  "seed": 42,
+  "max_steps": 40
+ },
+ "alfworld_vision": {
+  "provider": "openrouter",
+  "api_key_env": "OPENROUTER_API_KEY",
+  "base_url": "https://openrouter.ai/api/v1",
+  "model": "qwen/qwen3.6-35b-a3b",
+  "provider_preferences": {
+   "order": [
+    "atlas-cloud"
+   ],
+   "allow_fallbacks": false,
+   "quantizations": [
+    "fp8"
+   ],
+   "ignore": [
+    "darkbloom",
+    "phala"
+   ]
+  },
+  "reasoning_effort": "medium",
+  "max_tokens": 8192,
+  "client_max_reasoning_chars": 40000,
+  "client_max_seconds": 120,
+  "temperature": 0,
+  "seed": 42,
+  "max_steps": 40,
+  "jpeg_quality": 80
+ }
 }

@@ -551,13 +551,27 @@ class OpenAICompatibleModel:
     def _send(self, route: Route, request: dict[str, Any]) -> Any:
         """One provider's attempt, including the malformed-response retry.
 
+        Returns either a raw provider response (for `_parse`) or, on the
+        streaming-cutoff path, an already-parsed `ModelResponse` --
+        `complete()` handles both.
+
         INVARIANT: everything in this try block validates the PROVIDER's own
         response (malformed JSON, an empty `choices` list). No program-side
         parsing may ever be added here or inside `complete()`'s try block --
         `should_fallback` treats `json.JSONDecodeError` and
         `ProviderResponseError` as provider faults precisely because they can
         only originate from this validation, never from the program's output.
+        The streaming path keeps the invariant: everything it raises comes
+        from the provider's own stream, never from parsing program output.
         """
+        max_reasoning_chars = int(
+            self.config.get("client_max_reasoning_chars", 0) or 0
+        )
+        max_seconds = float(self.config.get("client_max_seconds", 0) or 0)
+        if max_reasoning_chars > 0 or max_seconds > 0:
+            return self._send_streaming(
+                route, request, max_reasoning_chars, max_seconds
+            )
         json_decode_retries = max(
             0,
             int(
@@ -590,6 +604,94 @@ class OpenAICompatibleModel:
                 )
                 time.sleep(delay_seconds)
         raise AssertionError("unreachable")
+
+    def _send_streaming(
+        self,
+        route: Route,
+        request: dict[str, Any],
+        max_reasoning_chars: int,
+        max_seconds: float,
+    ) -> ModelResponse:
+        """Stream one completion and cut it off past the configured budgets.
+
+        The client-side fix for a provider ignoring `max_tokens` on reasoning
+        tokens (qualified on the alfworld golden profile, 2026-09-01): closing
+        the HTTP stream ends generation at the provider (OpenRouter bills only
+        the tokens produced), so a runaway costs the budget rather than the
+        full context window. A cut-off call carries no usage block; token
+        counts are then estimated from characters (~3.2 chars/token measured
+        on this model) so the trace still records the spend.
+        """
+        client = self._clients[route.provider]
+        started = time.monotonic()
+        content_parts: list[str] = []
+        reasoning_parts: list[str] = []
+        reasoning_chars = 0
+        usage = None
+        cut_off = False
+        stream = client.chat.completions.create(
+            model=route.model,
+            **request,
+            stream=True,
+            stream_options={"include_usage": True},
+        )
+        try:
+            for chunk in stream:
+                if getattr(chunk, "usage", None):
+                    usage = chunk.usage
+                if not chunk.choices:
+                    continue
+                delta = chunk.choices[0].delta
+                piece = getattr(delta, "content", None)
+                if piece:
+                    content_parts.append(
+                        piece if isinstance(piece, str) else str(piece)
+                    )
+                thought = getattr(delta, "reasoning_content", None) or getattr(
+                    delta, "reasoning", None
+                )
+                if thought:
+                    reasoning_parts.append(str(thought))
+                    reasoning_chars += len(str(thought))
+                elapsed = time.monotonic() - started
+                if (
+                    max_reasoning_chars and reasoning_chars > max_reasoning_chars
+                ) or (max_seconds and elapsed > max_seconds):
+                    cut_off = True
+                    break
+        finally:
+            close = getattr(stream, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:  # noqa: BLE001 - best-effort stream teardown
+                    pass
+        content = "".join(content_parts)
+        reasoning = "".join(reasoning_parts)
+        if cut_off:
+            _LOGGER.warning(
+                "model.complete cut off after %.0fs / %d reasoning chars "
+                "(budget %.0fs / %d chars); salvaging partial reasoning",
+                time.monotonic() - started,
+                reasoning_chars,
+                max_seconds,
+                max_reasoning_chars,
+            )
+        if usage is not None:
+            prompt_tokens = int(getattr(usage, "prompt_tokens", 0) or 0)
+            completion_tokens = int(getattr(usage, "completion_tokens", 0) or 0)
+            total_tokens = int(getattr(usage, "total_tokens", 0) or 0)
+        else:
+            completion_tokens = int((len(content) + len(reasoning)) / 3.2)
+            prompt_tokens = 0
+            total_tokens = completion_tokens
+        return ModelResponse(
+            text=content.strip(),
+            reasoning=reasoning.strip(),
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
+        )
 
     @traceable("llm", name="model.complete", max_attr_chars=12_000)
     def complete(self, messages: list[dict[str, Any]]) -> ModelResponse:
@@ -659,6 +761,9 @@ class OpenAICompatibleModel:
             if breaker is not None:
                 breaker.record_success()
             _span_attr("lm.provider", route.provider)
+            if isinstance(response, ModelResponse):
+                # Streaming-cutoff path: `_send_streaming` already parsed it.
+                return response
             return self._parse(response)
 
         raise AssertionError("unreachable")
@@ -669,7 +774,17 @@ class OpenAICompatibleModel:
         content = message.content or ""
         if not isinstance(content, str):
             content = "".join(str(part) for part in content)
-        reasoning = getattr(message, "reasoning_content", None) or ""
+        # OpenAI-compatible providers disagree on where reasoning lands:
+        # DeepInfra returns `reasoning_content`, OpenRouter returns
+        # `reasoning`. Reading only the former silently blanks the field for
+        # a whole class of providers, which kills the `text or reasoning`
+        # action-salvage in alfworld_vision_program.py when a response
+        # truncates at max_tokens.
+        reasoning = (
+            getattr(message, "reasoning_content", None)
+            or getattr(message, "reasoning", None)
+            or ""
+        )
         usage = response.usage
         return ModelResponse(
             text=content.strip(),
