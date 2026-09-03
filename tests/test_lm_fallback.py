@@ -721,3 +721,174 @@ def test_route_is_hashable_and_frozen():
     route = Route("gmi", "m", "https://x", "K")
     with pytest.raises(dataclasses.FrozenInstanceError):
         route.model = "other"  # type: ignore[misc]
+
+
+# --- streaming cutoff (client-side max_tokens fix, golden alfworld profile) --
+
+
+class _Delta:
+    def __init__(self, content=None, reasoning_content=None, reasoning=None):
+        self.content = content
+        if reasoning_content is not None:
+            self.reasoning_content = reasoning_content
+        if reasoning is not None:
+            self.reasoning = reasoning
+
+
+class _StreamChoice:
+    def __init__(self, delta: _Delta) -> None:
+        self.delta = delta
+
+
+class _Chunk:
+    def __init__(self, delta: _Delta | None = None, usage=None) -> None:
+        self.choices = [_StreamChoice(delta)] if delta is not None else []
+        self.usage = usage
+
+
+class _FakeStream:
+    """Iterable of chunks with a recordable close(), like an SSE stream."""
+
+    def __init__(self, chunks) -> None:
+        self._chunks = iter(chunks)
+        self.closed = False
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        return next(self._chunks)
+
+    def close(self) -> None:
+        self.closed = True
+
+
+CUTOFF_CONFIG = {
+    **LEGACY_CONFIG,
+    "client_max_reasoning_chars": 10,
+    "client_max_seconds": 120,
+}
+
+
+@pytest.fixture
+def cutoff_model(monkeypatch, fake_openai):
+    monkeypatch.setattr(common, "load_runtime_config", lambda _n: dict(CUTOFF_CONFIG))
+    return lambda: OpenAICompatibleModel("alfworld_vision")
+
+
+def test_cutoff_config_switches_send_to_streaming(cutoff_model, fake_openai):
+    lm = cutoff_model()
+    client = fake_openai[LEGACY_CONFIG["base_url"]]
+    stream = _FakeStream([_Chunk(_Delta(content="ok"))])
+    client.behaviour = lambda _n, _kw: stream
+    result = lm.complete([{"role": "user", "content": "hi"}])
+    assert client.calls[0]["stream"] is True
+    assert client.calls[0]["stream_options"] == {"include_usage": True}
+    assert isinstance(result, ModelResponse)
+    assert result.text == "ok"
+    assert stream.closed  # best-effort teardown runs even without a cutoff
+
+
+def test_no_cutoff_config_keeps_the_non_streaming_path(monkeypatch, fake_openai):
+    monkeypatch.setattr(common, "load_runtime_config", lambda _n: dict(LEGACY_CONFIG))
+    lm = OpenAICompatibleModel("alfworld_vision")
+    client = fake_openai[LEGACY_CONFIG["base_url"]]
+    lm.complete([{"role": "user", "content": "hi"}])
+    assert "stream" not in client.calls[0]
+
+
+def test_reasoning_char_budget_cuts_the_stream_and_salvages(cutoff_model, fake_openai):
+    lm = cutoff_model()
+    client = fake_openai[LEGACY_CONFIG["base_url"]]
+    # 6 chars per chunk against a 10-char budget: chunk 2 crosses it, chunk 3
+    # must never be pulled.
+    pulled: list[int] = []
+
+    def chunks():
+        for n in range(1, 10):
+            pulled.append(n)
+            yield _Chunk(_Delta(reasoning_content="think!"))
+
+    stream = _FakeStream(chunks())
+    client.behaviour = lambda _n, _kw: stream
+    result = lm.complete([{"role": "user", "content": "hi"}])
+    assert pulled == [1, 2]
+    assert stream.closed
+    assert result.reasoning == "think!think!"
+    # No usage block arrived: tokens are the ~3.2 chars/token estimate.
+    assert result.completion_tokens == int(12 / 3.2)
+    assert result.total_tokens == result.completion_tokens
+    assert result.prompt_tokens == 0
+
+
+def test_seconds_budget_cuts_the_stream(monkeypatch, fake_openai):
+    config = {**LEGACY_CONFIG, "client_max_seconds": 5}
+    monkeypatch.setattr(common, "load_runtime_config", lambda _n: dict(config))
+    lm = OpenAICompatibleModel("alfworld_vision")
+    client = fake_openai[LEGACY_CONFIG["base_url"]]
+    clock = iter([0.0, 1.0, 99.0])  # started, chunk 1 check, chunk 2 check
+    monkeypatch.setattr(common.time, "monotonic", lambda: next(clock, 99.0))
+    stream = _FakeStream([_Chunk(_Delta(content="a")) for _ in range(9)])
+    client.behaviour = lambda _n, _kw: stream
+    result = lm.complete([{"role": "user", "content": "hi"}])
+    assert stream.closed
+    assert result.text == "aa"
+
+
+def test_streaming_prefers_a_real_usage_block(cutoff_model, fake_openai):
+    lm = cutoff_model()
+    client = fake_openai[LEGACY_CONFIG["base_url"]]
+    stream = _FakeStream([_Chunk(_Delta(content="done")), _Chunk(usage=_Usage())])
+    client.behaviour = lambda _n, _kw: stream
+    result = lm.complete([{"role": "user", "content": "hi"}])
+    assert (result.prompt_tokens, result.completion_tokens, result.total_tokens) == (3, 4, 7)
+
+
+def test_streaming_reads_reasoning_from_either_field(monkeypatch, fake_openai):
+    config = {**LEGACY_CONFIG, "client_max_reasoning_chars": 40000}
+    monkeypatch.setattr(common, "load_runtime_config", lambda _n: dict(config))
+    lm = OpenAICompatibleModel("alfworld_vision")
+    client = fake_openai[LEGACY_CONFIG["base_url"]]
+    stream = _FakeStream(
+        [
+            _Chunk(_Delta(reasoning_content="deepinfra-style ")),
+            _Chunk(_Delta(reasoning=None)),  # OpenRouter sends explicit nulls
+            _Chunk(_Delta(content="answer")),
+        ]
+    )
+    client.behaviour = lambda _n, _kw: stream
+    result = lm.complete([{"role": "user", "content": "hi"}])
+    assert result.reasoning == "deepinfra-style"
+    assert result.text == "answer"
+
+
+def test_streaming_failures_still_divert_to_the_cover(monkeypatch, model, fake_openai):
+    # The cutoff path must keep the _send INVARIANT: a provider fault raised
+    # while streaming diverts the call to the next route in the ring.
+    config = {**CONFIG, "client_max_reasoning_chars": 40000}
+    monkeypatch.setattr(common, "load_runtime_config", lambda _n: dict(config))
+    lm = OpenAICompatibleModel("appworld")
+    gmi = by_provider(fake_openai, "gmi")
+    gmi.behaviour = lambda _n, _kw: (_ for _ in ()).throw(api_error(500))
+    deepseek = by_provider(fake_openai, "deepseek")
+    deepseek.behaviour = lambda _n, _kw: _FakeStream([_Chunk(_Delta(content="covered"))])
+    result = lm.complete([{"role": "user", "content": "hi"}])
+    assert result.text == "covered"
+
+
+# --- _parse reasoning field fallback ---------------------------------------
+
+
+def test_parse_falls_back_to_the_openrouter_reasoning_field():
+    response = _Response("answer")
+    message = response.choices[0].message
+    message.reasoning_content = None
+    message.reasoning = "openrouter thought"
+    parsed = OpenAICompatibleModel._parse(response)
+    assert parsed.reasoning == "openrouter thought"
+
+
+def test_parse_still_prefers_reasoning_content():
+    response = _Response("answer")
+    parsed = OpenAICompatibleModel._parse(response)
+    assert parsed.reasoning == "thought"
